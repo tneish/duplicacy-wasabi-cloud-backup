@@ -1,0 +1,142 @@
+#!/usr/bin/python3
+
+import os
+import sys
+import smtplib
+import datetime
+import subprocess
+import pdb
+
+import psutil
+
+from email.mime.text import MIMEText
+
+
+TESTING = False
+
+dt_start_of_cronjob = datetime.datetime.now()
+
+
+class Config:
+    smtp_server = 'your.smtp.server.fqdn.here:465'
+    smtp_user = 'user'
+    smtp_pass = 'pass'
+    email_from = 'noreply@fqdn.here'
+    email_to = 'poorsysadmin@fqdn.here'
+    backup_paths = ['/path/to/duplicacy-repository',
+            ]
+    cmds = {
+            '1': 
+                { 'cmd': 'duplicacy backup -stats',
+                  'output': None
+                },
+            '2': 
+                { 'cmd': 'duplicacy check',
+                  'output': None
+                },
+            '3': 
+                { 'cmd': 'duplicacy prune -keep 0:80 -exclusive',
+                  'output': None
+                },
+            }
+
+def send_email(subject, body):
+    global TESTING
+    if TESTING:
+        print('send_email(): In testing mode. Email that would have been sent: \n'
+                + 'Subject: ' + str(subject) + '\n'
+                + 'Body:\n' 
+                + str(body)
+             )
+        return
+    else:
+        msg = MIMEText(str(body))
+        msg['Subject'] = str(subject)
+        s = smtplib.SMTP_SSL(Config.smtp_server)
+        s.login(Config.smtp_user, Config.smtp_pass)
+        s.sendmail(Config.email_from, Config.email_to, msg.as_string())
+        s.quit()
+        return 
+
+def find_procs_by_name(name):
+    "Return a list of processes matching 'name'."
+    ls = []
+    for p in psutil.process_iter(attrs=["name", "exe", "cmdline"]):
+        if name == p.info['name'] or \
+                p.info['exe'] and os.path.basename(p.info['exe']) == name or \
+                p.info['cmdline'] and p.info['cmdline'][0] == name:
+            ls.append(p)
+    return ls
+
+def abort_with_email(body, returncode):
+    try:
+        returncode = int(returncode)
+    except ValueError:
+        body += '\n\nAdditionally, a non-int returncode was passed to abort_with_email()'
+        returncode = 1
+    subject = ('[Aborted] Duplicacy cron job started '
+            + dt_start_of_cronjob.strftime("%Y-%m-%d %H:%M"))
+    send_email(subject, str(body))
+    print('[abort_with_email]:\n'
+            + body + '\n'
+            + 'Exiting.')
+    sys.exit(returncode)
+
+def exit_success_with_email(body):
+    day_and_month = (str(dt_start_of_cronjob.day)
+            + dt_start_of_cronjob.strftime(" %b"))
+    subject = ('[OK] ' + day_and_month + ' Duplicacy cron job '
+            + dt_start_of_cronjob.strftime("%H:%M."))
+    send_email(subject, str(body))
+    print('[exit_success_with_email]:\n'
+            + body + '\n'
+            + 'Exiting.')
+    sys.exit(0)
+
+
+# check if duplicacy running
+p_list = find_procs_by_name('duplicacy')
+if len(p_list) > 0:
+    # duplicacy is already running, abort or we could prune/purge chunks referenced
+    # by another backup process.
+    abort_with_email('Aborted because duplicacy already running: \n'
+            + str(p_list), 0)
+    
+# run backup on all paths
+# 'duplicacy init' should have been run, so config already in path/.duplicacy
+# no need to supply here. Keys should be stored with 'duplicacy set -key' so
+# again no need to supply here.
+cmds_index = list(Config.cmds.keys())
+# Must be in order since commands depend on each other
+cmds_index.sort()
+success_email_body = 'All commands on all paths exited with return code 0. See below for output.\n\n'
+for p in Config.backup_paths:
+    p_str = 'Repository in path <' + str(p) + '>\n\n'
+    success_email_body += p_str
+    print(p_str)
+    for i in cmds_index:
+        cmd = str(Config.cmds[i]['cmd'])
+        print('Running command <' + cmd + '>..')
+        try:
+            s = subprocess.run(cmd.split(' '),
+                            cwd=str(p),
+                            stdout=subprocess.PIPE, 
+                            stderr=subprocess.PIPE)
+        except FileNotFoundError:
+            abort_with_email('Error: command not found: \n' 
+                            + str(s), 1)
+        if s.returncode != 0:
+            abort_with_email('Error, non-zero return code from command\n' 
+                            + str(s) + '\n\n' + s.stderr.decode(), 0)
+        else:
+            Config.cmds[i]['output'] = s
+            success_email_body += ('Command <'
+                            + ' '.join(s.args) + '> ... '
+                            + 'returned code ' + str(s.returncode) + '.\n'
+                            + 'Stdout follows:\n'
+                            + s.stdout.decode() 
+                            + '\n\n'
+                            )
+
+success_email_body += '-End-'
+exit_success_with_email(success_email_body)
