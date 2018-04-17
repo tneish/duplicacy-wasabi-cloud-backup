@@ -97,7 +97,7 @@ Duplicacy can also get keys from a gpg keyring, but if run from cron the keyring
 Read this whole section first before you start the backup.
 
 ```
-user@linuxserver:/path/to/local/storage$ duplicacy backup -stats
+user@linuxserver:/path/to/local/storage$ duplicacy backup -stats -threads 10
 Storage set to s3://us-east-1@s3.wasabisys.com/bucketname
 No previous backup found
 Indexing /path/to/local/storage
@@ -109,7 +109,9 @@ Uploaded chunk 3 size 3596049, 1.20MB/s 00:05:40 2.3%
 ```
 Since it will run for a long time, you might want to run it in e.g. screen so that it does not terminate when you logout or lose connection to your ssh session.
 
-`user@linuxserver:/path/to/local/storage$ screen duplicacy backup -stats`
+It's useful to specify more than one thread to maximize uplink bandwidth. 10 threads worked for me on a 10Mbps uplink.
+
+`user@linuxserver:/path/to/local/storage$ screen duplicacy backup -stats -threads 10`
 
 To get it back later, e.g. in a different ssh session (for the same user), do `screen -r`  (-r for "reattach").
 
