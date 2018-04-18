@@ -18,16 +18,17 @@ dt_start_of_cronjob = datetime.datetime.now()
 
 
 class Config:
-    smtp_server = 'your.smtp.server.fqdn.here:465'
+    smtp_server = 'mail.yourisp.com:465'
     smtp_user = 'user'
     smtp_pass = 'pass'
-    email_from = 'noreply@fqdn.here'
-    email_to = 'poorsysadmin@fqdn.here'
-    backup_paths = ['/path/to/duplicacy-repository',
+    email_from = 'noreply@mail.yourisp.com'
+    email_to = 'sysadmin@mail.yourisp.com'
+    backup_paths = ['/path/to/repository1',
+            '/path/to/repository2',
             ]
     cmds = {
             '1': 
-                { 'cmd': 'duplicacy backup -stats',
+                { 'cmd': 'duplicacy backup -stats -threads 10',
                   'output': None
                 },
             '2': 
@@ -83,7 +84,7 @@ def abort_with_email(body, returncode):
     sys.exit(returncode)
 
 def exit_success_with_email(body):
-    day_and_month = (str(dt_start_of_cronjob.day)
+    day_and_month = (str(dt_start_of_cronjob.day) 
             + dt_start_of_cronjob.strftime(" %b"))
     subject = ('[OK] ' + day_and_month + ' Duplicacy cron job '
             + dt_start_of_cronjob.strftime("%H:%M."))
@@ -118,10 +119,12 @@ for p in Config.backup_paths:
         cmd = str(Config.cmds[i]['cmd'])
         print('Running command <' + cmd + '>..')
         try:
+            dt_start = datetime.datetime.now()
             s = subprocess.run(cmd.split(' '),
                             cwd=str(p),
                             stdout=subprocess.PIPE, 
                             stderr=subprocess.PIPE)
+            dt_end = datetime.datetime.now()
         except FileNotFoundError:
             abort_with_email('Error: command not found: \n' 
                             + str(s), 1)
@@ -132,6 +135,7 @@ for p in Config.backup_paths:
             Config.cmds[i]['output'] = s
             success_email_body += ('Command <'
                             + ' '.join(s.args) + '> ... '
+                            + 'took ' + print(dt_end - dt_start) + ' and '
                             + 'returned code ' + str(s.returncode) + '.\n'
                             + 'Stdout follows:\n'
                             + s.stdout.decode() 
