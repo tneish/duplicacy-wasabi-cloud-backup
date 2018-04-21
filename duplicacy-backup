@@ -135,7 +135,7 @@ for p in Config.backup_paths:
             Config.cmds[i]['output'] = s
             success_email_body += ('Command <'
                             + ' '.join(s.args) + '> ... '
-                            + 'took ' + print(dt_end - dt_start) + ' and '
+                            + 'took ' + str(dt_end - dt_start) + ' and '
                             + 'returned code ' + str(s.returncode) + '.\n'
                             + 'Stdout follows:\n'
                             + s.stdout.decode() 
