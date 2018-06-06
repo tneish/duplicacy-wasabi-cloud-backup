@@ -2,48 +2,24 @@
 
 import os
 import sys
+import re
 import smtplib
 import datetime
 import subprocess
-import pdb
-
-import psutil
-
 from email.mime.text import MIMEText
+import psutil
+import copy
 
 
-TESTING = False
+def init_output_dict(Config):
+    output_dict = {}
+    for p in Config.backup_paths:
+        output_dict[p] = copy.deepcopy(Config.cmds) # copy
+    #print(str(output_dict))
+    return output_dict
 
-dt_start_of_cronjob = datetime.datetime.now()
-
-
-class Config:
-    smtp_server = 'mail.yourisp.com:465'
-    smtp_user = 'user'
-    smtp_pass = 'pass'
-    email_from = 'noreply@mail.yourisp.com'
-    email_to = 'sysadmin@mail.yourisp.com'
-    backup_paths = ['/path/to/repository1',
-            '/path/to/repository2',
-            ]
-    cmds = {
-            '1': 
-                { 'cmd': 'duplicacy backup -stats -threads 10',
-                  'output': None
-                },
-            '2': 
-                { 'cmd': 'duplicacy check',
-                  'output': None
-                },
-            '3': 
-                { 'cmd': 'duplicacy prune -keep 0:80 -exclusive',
-                  'output': None
-                },
-            }
-
-def send_email(subject, body):
-    global TESTING
-    if TESTING:
+def send_email(Config, subject, body):
+    if Config.TESTING:
         print('send_email(): In testing mode. Email that would have been sent: \n'
                 + 'Subject: ' + str(subject) + '\n'
                 + 'Body:\n' 
@@ -69,7 +45,7 @@ def find_procs_by_name(name):
             ls.append(p)
     return ls
 
-def abort_with_email(body, returncode):
+def abort_with_email(Config, dt_start_of_cronjob, body, returncode):
     try:
         returncode = int(returncode)
     except ValueError:
@@ -77,22 +53,154 @@ def abort_with_email(body, returncode):
         returncode = 1
     subject = ('[Aborted] Duplicacy cron job started '
             + dt_start_of_cronjob.strftime("%Y-%m-%d %H:%M"))
-    send_email(subject, str(body))
+    send_email(Config, subject, str(body))
     print('[abort_with_email]:\n'
             + body + '\n'
             + 'Exiting.')
     sys.exit(returncode)
 
-def exit_success_with_email(body):
+def exit_success_with_email(Config,dt_start_of_cronjob,body):
     day_and_month = (str(dt_start_of_cronjob.day) 
             + dt_start_of_cronjob.strftime(" %b"))
     subject = ('[OK] ' + day_and_month + ' Duplicacy cron job '
             + dt_start_of_cronjob.strftime("%H:%M."))
-    send_email(subject, str(body))
+    send_email(Config, subject, str(body))
     print('[exit_success_with_email]:\n'
             + body + '\n'
             + 'Exiting.')
     sys.exit(0)
+
+def print_default_header(output_dict):
+    return 'All commands on all paths exited with return code 0. See below for output.\n\n' 
+
+def bytes_to_pretty_text(b):
+    G = 1024*1024*1024
+    M = 1024*1024
+    K = 1024
+    if (b > 1000*G):
+        return '{0:.0f}G'.format(b/G)
+    elif (b > G):
+        return '{0:.0f},{1:3.0f}M'.format(b/(1000*M), (b/M)%1000)
+    elif (b > M):
+        # more than 1M, less than 1G
+        return '{0:.0f},{1:3.0f}M'.format(b/(1000*K), (b/K)%1000)
+    elif (b > K):
+        return '{0:.0f}K'.format(b/K)
+    else:
+        return '{0:.0d}'.format(b)
+
+def pretty_text_to_bytes(t):
+    # from v2.1.0 branch:
+#    func PrettyNumber(number int64) string {
+#                            G := int64(1024 * 1024 * 1024)
+#                            M := int64(1024 * 1024)
+#                            K := int64(1024)
+#    
+#                            if number > 1000*G {
+#                                return fmt.Sprintf("%dG", number/G)
+#                            } else if number > G {
+#                                return fmt.Sprintf("%d,%03dM", number/(1000*M), (number/M)%1000)
+#                            } else if number > M {
+#                                return fmt.Sprintf("%d,%03dK", number/(1000*K), (number/K)%1000)
+#                            } else if number > K {
+#                                return fmt.Sprintf("%dK", number/K)
+#                            } else {
+#                                return fmt.Sprintf("%d", number)
+#                            }
+#                        }
+
+    # remove commas
+    t = t.replace(',','')
+    # check units
+    try:
+        if (t[-1] == 'G'):
+            b = int(t[:-1])*1024*1024*1024
+        elif(t[-1] == 'M'):
+            b = int(t[:-1])*1024*1024
+        elif(t[-1] == 'K'):
+            b = int(t[:-1])*1024
+        elif(re.search(r'[0-9]',t[-1])):
+            # is a number
+            b = int(t)
+        else:
+            # error in parsing.
+            return False
+    except:
+        return False
+    return b
+
+def print_size_summary_header(output_dict):
+    total_existing_bytes = 0
+    total_additional_bytes = 0
+    found_cmd = False
+    found_line = False
+    # find total existing & addition sizes:
+    for path in output_dict.keys():	
+        for cmd_index in output_dict[path].keys():
+            if(re.search('duplicacy backup.*-stats',output_dict[path][cmd_index]['cmd'])):
+                # found command we can work with
+                found_cmd = True
+                for l in output_dict[path][cmd_index]['output'].splitlines():
+                    if(re.search(r'^Files: .* total, .* bytes; .* new, .* bytes',l)):
+                        # from /src/duplicacy_backupmanager.go, ver v2.1.0
+                        # "Files: %d total, %s bytes; %d new, %s bytes"
+                        found_line = True
+                        ss = l.split(' bytes')
+                        ss_tot = ss[0].split(' ')
+                        tot = ss_tot[-1].strip()
+                        tot_bytes = pretty_text_to_bytes(tot)
+                        if (tot_bytes is False):
+                            return 'Err header parse. Found cmd & line but could not parse bytes. Check cron output for details.'
+                        total_existing_bytes += tot_bytes
+                        ss_add = ss[1].split(' ')
+                        add = ss_add[-1].strip()
+                        add_bytes = pretty_text_to_bytes(add)
+                        if (add_bytes is False):
+                            return 'Err header parse. Found cmd & line but could not parse bytes. Check cron output for details.'
+                        total_additional_bytes += add_bytes
+    if (found_cmd):
+        if (found_line):
+            tot = bytes_to_pretty_text(total_existing_bytes)
+            if (total_additional_bytes > 0):
+                add = bytes_to_pretty_text(total_additional_bytes)
+                return tot + ', added ' + add + '.\n\n'
+            else:
+                return tot + ', no change.\n\n'
+        else:
+            return 'Err header parse. Found cmd but not line. Check cron output for details.'
+    else:
+        return 'Err header parse. Didn\'t find cmd or line. Check cron output for details.'
+
+
+dt_start_of_cronjob = datetime.datetime.now()
+
+
+class Config:
+    TESTING = False
+    DEBUG = False
+    smtp_server = 'mail.yourisp.com:465'
+    smtp_user = 'user'
+    smtp_pass = 'pass'
+    email_from = 'noreply@mail.yourisp.com'
+    email_to = 'sysadmin@mail.yourisp.com'
+    backup_paths = ['/path/to/repository1',
+            '/path/to/repository2',
+            ]
+    cmds = {
+            '1': 
+                { 'cmd': 'duplicacy backup -stats -threads 10',
+                },
+            '2': 
+                { 'cmd': 'duplicacy check',
+                },
+            '3': 
+                { 'cmd': 'duplicacy prune -keep 0:80 -exclusive',
+                },
+            }
+    # should not be called before function declared
+    def get_function_to_print_header():
+        #return globals()['print_default_header']
+        return globals()['print_size_summary_header']
 
 
 # check if duplicacy running
@@ -100,7 +208,7 @@ p_list = find_procs_by_name('duplicacy')
 if len(p_list) > 0:
     # duplicacy is already running, abort or we could prune/purge chunks referenced
     # by another backup process.
-    abort_with_email('Aborted because duplicacy already running: \n'
+    abort_with_email(Config,dt_start_of_cronjob,'Aborted because duplicacy already running: \n'
             + str(p_list), 0)
     
 # run backup on all paths
@@ -110,7 +218,9 @@ if len(p_list) > 0:
 cmds_index = list(Config.cmds.keys())
 # Must be in order since commands depend on each other
 cmds_index.sort()
-success_email_body = 'All commands on all paths exited with return code 0. See below for output.\n\n'
+success_email_body = ''
+output_dict = init_output_dict(Config)
+
 for p in Config.backup_paths:
     p_str = 'Repository in path <' + str(p) + '>\n\n'
     success_email_body += p_str
@@ -126,16 +236,16 @@ for p in Config.backup_paths:
                             stderr=subprocess.PIPE)
             dt_end = datetime.datetime.now()
         except FileNotFoundError:
-            abort_with_email('Error: command not found: \n' 
+            abort_with_email(Config,dt_start_of_cronjob,'Error: command not found: \n' 
                             + str(s), 1)
         if s.returncode != 0:
-            abort_with_email('Error, non-zero return code from command\n' 
+            abort_with_email(Config,dt_start_of_cronjob,'Error, non-zero return code from command\n' 
                             + str(s) + '\n\n' + s.stderr.decode(), 0)
         else:
-            Config.cmds[i]['output'] = s
+            output_dict[p][i]['output'] = str(s.stdout.decode()) #copy
             success_email_body += ('Command <'
                             + ' '.join(s.args) + '> ... '
-                            + 'took ' + print(dt_end - dt_start) + ' and '
+                            + 'took ' + str(dt_end - dt_start) + ' and '
                             + 'returned code ' + str(s.returncode) + '.\n'
                             + 'Stdout follows:\n'
                             + s.stdout.decode() 
@@ -143,4 +253,12 @@ for p in Config.backup_paths:
                             )
 
 success_email_body += '-End-'
-exit_success_with_email(success_email_body)
+if Config.DEBUG:
+    print('output_dict = \n')
+    print(str(output_dict))
+
+success_email_header_row = str(Config.get_function_to_print_header()(output_dict))
+exit_success_with_email(Config, 
+                        dt_start_of_cronjob,
+                        success_email_header_row + success_email_body
+                        )
