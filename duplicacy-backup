@@ -80,14 +80,14 @@ def bytes_to_pretty_text(b):
     if (b > 1000*G):
         return '{0:.0f}G'.format(b/G)
     elif (b > G):
-        return '{0:.0f},{1:3.0f}M'.format(b/(1000*M), (b/M)%1000)
+        return '{0:.0f},{1:0>3.0f}M'.format(b/(1000*M), (b/M)%1000)
     elif (b > M):
         # more than 1M, less than 1G
-        return '{0:.0f},{1:3.0f}M'.format(b/(1000*K), (b/K)%1000)
+        return '{0:.0f},{1:0>3.0f}M'.format(b/(1000*K), (b/K)%1000)
     elif (b > K):
         return '{0:.0f}K'.format(b/K)
     else:
-        return '{0:.0d}'.format(b)
+        return '{0:.0d}B'.format(b)
 
 def pretty_text_to_bytes(t):
     # from v2.1.0 branch:
