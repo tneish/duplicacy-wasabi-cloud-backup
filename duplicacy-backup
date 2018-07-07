@@ -80,10 +80,10 @@ def bytes_to_pretty_text(b):
     if (b > 1000*G):
         return '{0:.0f}G'.format(b/G)
     elif (b > G):
-        return '{0:.0f},{1:0>3.0f}M'.format(b/(1000*M), (b/M)%1000)
+        return '{0:.0f}.{1:0>3.0f}G'.format(b/(1000*M), (b/M)%1000)
     elif (b > M):
         # more than 1M, less than 1G
-        return '{0:.0f},{1:0>3.0f}M'.format(b/(1000*K), (b/K)%1000)
+        return '{0:.1f}M'.format(b/M)
     elif (b > K):
         return '{0:.0f}K'.format(b/K)
     else:
@@ -163,9 +163,9 @@ def print_size_summary_header(output_dict):
             tot = bytes_to_pretty_text(total_existing_bytes)
             if (total_additional_bytes > 0):
                 add = bytes_to_pretty_text(total_additional_bytes)
-                return tot + ', added ' + add + '.\n\n'
+                return tot + ' added ' + add + '.\n\n'
             else:
-                return tot + ', no change.\n\n'
+                return tot + ' no change.\n\n'
         else:
             return 'Err header parse. Found cmd but not line. Check cron output for details.'
     else:
@@ -187,13 +187,13 @@ class Config:
             '/path/to/repository2',
             ]
     cmds = {
-            '1': 
+            '1':
                 { 'cmd': 'duplicacy backup -stats -threads 10',
                 },
-            '2': 
+            '2':
                 { 'cmd': 'duplicacy check',
                 },
-            '3': 
+            '3':
                 { 'cmd': 'duplicacy prune -keep 0:80 -exclusive',
                 },
             }
