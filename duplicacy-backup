@@ -7,9 +7,12 @@ import smtplib
 import datetime
 import subprocess
 from email.mime.text import MIMEText
+import paho.mqtt.client as mqtt
 import psutil
 import copy
+from duplicacybackupconfig import Config
 
+supported_notify_methods = ['EMAIL', 'MQTT']
 
 def init_output_dict(Config):
     output_dict = {}
@@ -17,6 +20,24 @@ def init_output_dict(Config):
         output_dict[p] = copy.deepcopy(Config.cmds) # copy
     #print(str(output_dict))
     return output_dict
+
+def send_mqtt(Config, subject, body):
+    if Config.TESTING:
+        print('send_mqtt(): In testing mode. MQTT that would have been sent: \n'
+                + 'Subject: ' + str(subject) + '\n'
+                + 'Body:\n'
+                + str(body)
+             )
+        return
+    else:
+        client = mqtt.Client()
+        client.username_pw_set(Config.mqtt_user, Config.mqtt_password)
+        client.connect(Config.mqtt_broker, Config.mqtt_port)
+        # subject and first two lines of body
+        client.publish(Config.mqtt_topic, subject + '. ' + ' '.join(body.split('\n')[:2]))
+        client.disconnect()
+        return
+
 
 def send_email(Config, subject, body):
     if Config.TESTING:
@@ -45,19 +66,37 @@ def find_procs_by_name(name):
             ls.append(p)
     return ls
 
-def abort_with_email(Config, dt_start_of_cronjob, body, returncode):
+def abort_and_notify(Config, dt_start_of_cronjob, body, returncode):
     try:
         returncode = int(returncode)
     except ValueError:
-        body += '\n\nAdditionally, a non-int returncode was passed to abort_with_email()'
+        body += '\n\nAdditionally, a non-int returncode was passed to abort_and_notify()'
         returncode = 1
     subject = ('[Aborted] Duplicacy cron job started '
             + dt_start_of_cronjob.strftime("%Y-%m-%d %H:%M"))
-    send_email(Config, subject, str(body))
-    print('[abort_with_email]:\n'
+    if Config.notify_method == 'EMAIL':
+        send_email(Config, subject, str(body))
+    else:
+        send_mqtt(Config, subject, str(body))
+
+    print('[abort_and_notify]:\n'
             + body + '\n'
             + 'Exiting.')
     sys.exit(returncode)
+
+def exit_success_and_notify(Config, dt_start_of_cronjob, body):
+    day_and_month = (str(dt_start_of_cronjob.day) 
+            + dt_start_of_cronjob.strftime(" %b"))
+    subject = ('[OK] ' + day_and_month + ' Duplicacy cron job '
+            + dt_start_of_cronjob.strftime("%H:%M."))
+    if Config.notify_method == 'EMAIL':
+        send_email(Config, subject, str(body))
+    else:
+        send_mqtt(Config, subject, str(body))
+    print('[exit_success_and_notify]:\n'
+            + body + '\n'
+            + 'Exiting.')
+    sys.exit(0)
 
 def exit_success_with_email(Config,dt_start_of_cronjob,body):
     day_and_month = (str(dt_start_of_cronjob.day) 
@@ -90,25 +129,6 @@ def bytes_to_pretty_text(b):
         return '{0:.0d}B'.format(b)
 
 def pretty_text_to_bytes(t):
-    # from v2.1.0 branch:
-#    func PrettyNumber(number int64) string {
-#                            G := int64(1024 * 1024 * 1024)
-#                            M := int64(1024 * 1024)
-#                            K := int64(1024)
-#    
-#                            if number > 1000*G {
-#                                return fmt.Sprintf("%dG", number/G)
-#                            } else if number > G {
-#                                return fmt.Sprintf("%d,%03dM", number/(1000*M), (number/M)%1000)
-#                            } else if number > M {
-#                                return fmt.Sprintf("%d,%03dK", number/(1000*K), (number/K)%1000)
-#                            } else if number > K {
-#                                return fmt.Sprintf("%dK", number/K)
-#                            } else {
-#                                return fmt.Sprintf("%d", number)
-#                            }
-#                        }
-
     # remove commas
     t = t.replace(',','')
     # check units
@@ -175,41 +195,55 @@ def print_size_summary_header(output_dict):
 dt_start_of_cronjob = datetime.datetime.now()
 
 
-class Config:
-    TESTING = False
-    DEBUG = False
-    smtp_server = 'mail.yourisp.com:465'
-    smtp_user = 'user'
-    smtp_pass = 'pass'
-    email_from = 'noreply@mail.yourisp.com'
-    email_to = 'sysadmin@mail.yourisp.com'
-    backup_paths = ['/path/to/repository1',
-            '/path/to/repository2',
-            ]
-    cmds = {
-            '1':
-                { 'cmd': 'duplicacy backup -stats -threads 10',
-                },
-            '2':
-                { 'cmd': 'duplicacy check',
-                },
-            '3':
-                { 'cmd': 'duplicacy prune -keep 0:80 -exclusive',
-                },
-            }
-    # should not be called before function declared
-    def get_function_to_print_header():
-        #return globals()['print_default_header']
-        return globals()['print_size_summary_header']
+#class Config:
+#    TESTING = True
+#    DEBUG = False
+#
+#    notify_method = 'MQTT'  # see supported_notify_methods
+#
+#    smtp_server = 'mail.yourisp.com:465'
+#    smtp_user = 'user'
+#    smtp_pass = 'pass'
+#    email_from = 'noreply@mail.yourisp.com'
+#    email_to = 'sysadmin@mail.yourisp.com'
+#    # Define the MQTT broker settings
+#    mqtt_broker = "10.0.1.254"
+#    mqtt_port = 1883
+#    mqtt_topic = "notify/android/t"
+#    backup_paths = ['/path/to/repository1',
+#            '/path/to/repository2',
+#            ]
+#    cmds = {
+#            '1':
+#                { 'cmd': 'duplicacy backup -stats -threads 10',
+#                },
+#            '2':
+#                { 'cmd': 'duplicacy check',
+#                },
+#            '3':
+#                { 'cmd': 'duplicacy prune -keep 0:80 -exclusive',
+#                },
+#            }
+#    # should not be called before function declared
 
+def get_function_to_print_header():
+     #return globals()['print_default_header']
+     return globals()['print_size_summary_header']
+
+
+if Config.notify_method not in supported_notify_methods:
+    print('[abort] Notify method not supported. Check Config.notify_method is in supported_notify_methods!')
+    sys.exit(1)
 
 # check if duplicacy running
 p_list = find_procs_by_name('duplicacy')
 if len(p_list) > 0:
     # duplicacy is already running, abort or we could prune/purge chunks referenced
     # by another backup process.
-    abort_with_email(Config,dt_start_of_cronjob,'Aborted because duplicacy already running: \n'
+    abort_and_notify(Config,dt_start_of_cronjob,'Aborted because duplicacy already running: \n'
             + str(p_list), 0)
+    #abort_with_email(Config,dt_start_of_cronjob,'Aborted because duplicacy already running: \n'
+    #        + str(p_list), 0)
     
 # run backup on all paths
 # 'duplicacy init' should have been run, so config already in path/.duplicacy
@@ -236,10 +270,10 @@ for p in Config.backup_paths:
                             stderr=subprocess.PIPE)
             dt_end = datetime.datetime.now()
         except FileNotFoundError:
-            abort_with_email(Config,dt_start_of_cronjob,'Error: command not found: \n' 
+            abort_and_notify(Config,dt_start_of_cronjob,'Error: command not found: \n' 
                             + str(s), 1)
         if s.returncode != 0:
-            abort_with_email(Config,dt_start_of_cronjob,'Error, non-zero return code from command\n' 
+            abort_and_notify(Config,dt_start_of_cronjob,'Error, non-zero return code from command\n' 
                             + str(s) + '\n\n' + s.stderr.decode(), 0)
         else:
             output_dict[p][i]['output'] = str(s.stdout.decode()) #copy
@@ -257,8 +291,10 @@ if Config.DEBUG:
     print('output_dict = \n')
     print(str(output_dict))
 
-success_email_header_row = str(Config.get_function_to_print_header()(output_dict))
-exit_success_with_email(Config, 
+success_email_header_row = str(get_function_to_print_header()(output_dict))
+
+exit_success_and_notify(Config,
                         dt_start_of_cronjob,
                         success_email_header_row + success_email_body
                         )
+
