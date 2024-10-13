@@ -1,0 +1,6 @@
+[Unit]
+Description=Daily duplicacy backup script
+
+[Service]
+ExecStart=/home/t/duplicacy-script/duplicacy-backup
+Type=oneshot
